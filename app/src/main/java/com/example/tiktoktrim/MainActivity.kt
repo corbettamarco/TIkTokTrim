@@ -76,9 +76,12 @@ class MainActivity : ComponentActivity() {
         val originalUrl = uri.toString()
         Log.d(TAG, "Original URL: $originalUrl")
 
-        // If the URI is a TikTok short link (vm.tiktok.com) resolve the redirect to the final URL
-        val finalUrl = if ((uri.host ?: "").equals("vm.tiktok.com", ignoreCase = true)) {
-            Log.d(TAG, "Detected vm.tiktok.com, resolving redirect...")
+        // If the URI is a TikTok short link (vm.tiktok.com or /t/ path) resolve the redirect to the final URL
+        val needsResolution = (uri.host ?: "").equals("vm.tiktok.com", ignoreCase = true) ||
+                uri.path?.startsWith("/t/") == true
+
+        val finalUrl = if (needsResolution) {
+            Log.d(TAG, "Detected short link, resolving redirect...")
             val resolved = resolveRedirect(originalUrl)
             Log.d(TAG, "Resolved to: $resolved")
             resolved ?: originalUrl
@@ -158,7 +161,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * For a short-link (vm.tiktok.com) perform a network request to follow redirects and
+     * For a short-link (vm.tiktok.com or /t/ paths) perform a network request to follow redirects and
      * return the final destination URL. Runs on IO dispatcher where called.
      */
     private suspend fun resolveRedirect(url: String): String? = withContext(Dispatchers.IO) {
@@ -182,58 +185,73 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Try to open the URL in the user's browser.
-     * We explicitly try common browsers to avoid looping back to ourselves.
+     * Uses ACTION_VIEW with explicit package selection to avoid looping.
      */
     private fun openInBrowser(url: String) {
         try {
             val uri = Uri.parse(url)
 
-            // 1) Try a plain ACTION_VIEW for the actual URL. If there's any browser, this should work.
-            val viewIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+            // Create an intent that can query for browsers
+            val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com")).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
-            val handlers = packageManager.queryIntentActivities(viewIntent, 0)
-            Log.d(TAG, "Found ${handlers.size} handlers for the URL")
-            handlers.forEach { Log.d(TAG, "Handler: ${it.activityInfo.packageName}/${it.activityInfo.name}") }
+            // Get all apps that can handle generic web URLs (browsers)
+            val browsers = packageManager.queryIntentActivities(browserIntent, 0)
+                .filter { it.activityInfo.packageName != packageName } // Exclude ourselves
 
-            // Filter out our own package to avoid loops
-            val externalHandlers = handlers.filter { it.activityInfo.packageName != packageName }
-            if (externalHandlers.isNotEmpty()) {
-                // Prefer Chrome if present among handlers; otherwise pick the first
-                val preferred = externalHandlers.firstOrNull { it.activityInfo.packageName in preferredBrowserPackages } ?: externalHandlers.first()
-                Log.d(TAG, "Launching with: ${preferred.activityInfo.packageName}")
-                viewIntent.setPackage(preferred.activityInfo.packageName)
-                startActivity(viewIntent)
-                return
+            Log.d(TAG, "Found ${browsers.size} browser(s)")
+            browsers.forEach {
+                Log.d(TAG, "Browser: ${it.activityInfo.packageName}")
             }
 
-            // 2) If no handlers are returned (rare), explicitly probe known browser packages
-            val installedKnown = preferredBrowserPackages.filter { pkg ->
-                runCatching { packageManager.getPackageInfo(pkg, 0) }.isSuccess
-            }
+            if (browsers.isNotEmpty()) {
+                // Prefer Chrome if available, otherwise use the first browser found
+                val preferredBrowser = browsers.firstOrNull {
+                    it.activityInfo.packageName in preferredBrowserPackages
+                } ?: browsers.first()
 
-            if (installedKnown.isNotEmpty()) {
-                val browserPackage = installedKnown.first()
-                Log.d(TAG, "No generic handlers; falling back to known browser: $browserPackage")
-                val explicit = Intent(Intent.ACTION_VIEW, uri).apply {
-                    setPackage(browserPackage)
+                val targetPackage = preferredBrowser.activityInfo.packageName
+                Log.d(TAG, "Opening URL in: $targetPackage")
+
+                // Create intent specifically for the chosen browser with our cleaned URL
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    setPackage(targetPackage)
                     addCategory(Intent.CATEGORY_BROWSABLE)
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
-                startActivity(explicit)
+
+                startActivity(intent)
                 return
             }
 
-            // 3) Last resort: try without setting package and let system decide
-            try {
-                Log.d(TAG, "Trying ACTION_VIEW without explicit package")
-                startActivity(Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                return
-            } catch (e: ActivityNotFoundException) {
-                Log.e(TAG, "ERROR: No browser found! Install Chrome or another browser in the emulator.")
+            // Fallback: if no browsers found through query, try known packages directly
+            val installedBrowser = preferredBrowserPackages.firstOrNull { pkg ->
+                runCatching {
+                    packageManager.getPackageInfo(pkg, 0)
+                }.isSuccess
             }
+
+            if (installedBrowser != null) {
+                Log.d(TAG, "Fallback: opening in $installedBrowser")
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    setPackage(installedBrowser)
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+                return
+            }
+
+            // Last resort: try without package specification
+            Log.d(TAG, "Last resort: trying ACTION_VIEW without package")
+            startActivity(Intent(Intent.ACTION_VIEW, uri).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            })
+
+        } catch (e: ActivityNotFoundException) {
+            Log.e(TAG, "ERROR: No browser found! Install Chrome or another browser.")
         } catch (e: Exception) {
             Log.e(TAG, "Error opening browser", e)
         }

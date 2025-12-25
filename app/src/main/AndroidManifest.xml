@@ -34,16 +34,19 @@
         <activity
             android:name=".MainActivity"
             android:exported="true">
-            <!-- Handle https TikTok links (app links & browser redirects) -->
+            <!-- Handle short TikTok links -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-
-                <!-- Short link host -->
                 <data android:scheme="https" android:host="vm.tiktok.com" />
+            </intent-filter>
 
-                <!-- tiktok hosts (catch common variants) -->
+            <!-- Handle all TikTok.com links (including /t/ paths) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" android:host="www.tiktok.com" />
                 <data android:scheme="https" android:host="m.tiktok.com" />
                 <data android:scheme="https" android:host="tiktok.com" />
